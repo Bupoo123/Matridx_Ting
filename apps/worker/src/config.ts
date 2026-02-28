@@ -5,6 +5,7 @@ import { z } from "zod";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 loadEnv({ path: resolve(currentDir, "../../../.env") });
+const defaultNotesRoot = resolve(currentDir, "../../../infra/data/notes");
 
 const schema = z.object({
   REDIS_URL: z.string().min(1),
@@ -19,6 +20,12 @@ const schema = z.object({
   OPENROUTER_SITE_URL: z.string().url().optional(),
   OPENROUTER_APP_NAME: z.string().optional(),
   QWEN_ASR_BASE_URL: z.string().url().default("https://dashscope.aliyuncs.com/compatible-mode/v1"),
+  QWEN_FILETRANS_API_BASE: z.string().url().default("https://dashscope.aliyuncs.com/api/v1"),
+  QWEN_FILETRANS_MODEL: z.string().default("qwen3-asr-flash-filetrans"),
+  QWEN_FILETRANS_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(3000),
+  QWEN_FILETRANS_TIMEOUT_MS: z.coerce.number().int().positive().default(1800000),
+  LONG_AUDIO_THRESHOLD_MS: z.coerce.number().int().positive().default(300000),
+  NOTES_STORAGE_ROOT: z.string().default(defaultNotesRoot),
   QWEN_ASR_API_KEY: z.string().optional(),
   SEED_ASR_ENDPOINT: z.string().url().optional(),
   SEED_ASR_TIMEOUT_MS: z.coerce.number().int().positive().default(20000),

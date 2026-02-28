@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { toFile } from "openai/uploads";
+import WebSocket from "ws";
 import { config } from "./config.js";
 
 type AnalysisProvider = "openai" | "openrouter";
@@ -34,7 +35,12 @@ function createSttCompatibleClient(provider: Exclude<SttProvider, "seed-asr">, a
 
 async function testQwenAsr(apiKey: string, model: string) {
   if (model.includes("realtime")) {
-    throw new Error("当前录音转写链路不支持 realtime 模型，请改用非 realtime 的 Qwen ASR 模型。");
+    await testQwenRealtime(apiKey, model);
+    return;
+  }
+  if (model.includes("filetrans")) {
+    await testQwenFiletrans(apiKey, model);
+    return;
   }
   const client = createSttCompatibleClient("qwen3-asr", apiKey);
   const audioBase64 = buildSilentWav().toString("base64");
@@ -58,6 +64,57 @@ async function testQwenAsr(apiKey: string, model: string) {
   if (!content || (typeof content === "string" && !content.trim())) {
     throw new Error("Qwen ASR 返回空结果");
   }
+}
+
+async function testQwenFiletrans(apiKey: string, model: string) {
+  const response = await fetch(`${config.QWEN_FILETRANS_API_BASE.replace(/\/$/, "")}/services/audio/asr/transcription`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey || config.QWEN_ASR_API_KEY || "EMPTY"}`,
+      "Content-Type": "application/json",
+      "X-DashScope-Async": "enable"
+    },
+    body: JSON.stringify({
+      model,
+      input: {
+        file_url:
+          "https://dashscope.oss-cn-beijing.aliyuncs.com/samples/audio/sensevoice/rich_text_example_1.wav"
+      }
+    })
+  });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  const payload = (await response.json()) as { output?: { task_id?: string } };
+  if (!payload.output?.task_id) {
+    throw new Error("Qwen filetrans 未返回 task_id");
+  }
+}
+
+async function testQwenRealtime(apiKey: string, model: string) {
+  const query = new URLSearchParams({ model });
+  const wsUrl = `${config.QWEN_REALTIME_WS_URL}?${query.toString()}`;
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      socket.close();
+      reject(new Error("Qwen realtime 测试超时"));
+    }, 8000);
+    const socket = new WebSocket(wsUrl, {
+      headers: {
+        Authorization: `Bearer ${apiKey || config.QWEN_ASR_API_KEY || "EMPTY"}`,
+        ...(config.DASHSCOPE_WORKSPACE ? { "X-DashScope-WorkSpace": config.DASHSCOPE_WORKSPACE } : {})
+      }
+    });
+    socket.on("open", () => {
+      clearTimeout(timer);
+      socket.close();
+      resolve();
+    });
+    socket.on("error", (error: Error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
 }
 
 function buildSilentWav(durationMs = 1000, sampleRate = 16000): Buffer {

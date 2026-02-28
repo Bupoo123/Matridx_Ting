@@ -9,6 +9,10 @@
     "dev:up": "bash scripts/dev-up.sh",
     "dev:api": "pnpm --filter @matridx/api dev",
     "dev:worker": "pnpm --filter @matridx/worker dev",
+    "qa:smoke": "bash scripts/qa/api-smoke.sh",
+    "qa:drill": "bash scripts/qa/failure-drill.sh",
+    "qa:dispatch": "bash scripts/qa/stt-dispatch-boundary.sh",
+    "qa:all": "pnpm qa:dispatch && pnpm qa:smoke && pnpm qa:drill",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck"
   }

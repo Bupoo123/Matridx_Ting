@@ -5,9 +5,10 @@ import { z } from "zod";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 loadEnv({ path: resolve(currentDir, "../../../.env") });
+const defaultNotesRoot = resolve(currentDir, "../../../infra/data/notes");
 
 const schema = z.object({
-  PORT: z.coerce.number().default(8080),
+  PORT: z.coerce.number().default(8081),
   HOST: z.string().default("0.0.0.0"),
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),
@@ -21,7 +22,11 @@ const schema = z.object({
   OPENROUTER_SITE_URL: z.string().url().optional(),
   OPENROUTER_APP_NAME: z.string().optional(),
   QWEN_ASR_BASE_URL: z.string().url().default("https://dashscope.aliyuncs.com/compatible-mode/v1"),
+  QWEN_FILETRANS_API_BASE: z.string().url().default("https://dashscope.aliyuncs.com/api/v1"),
   QWEN_ASR_API_KEY: z.string().optional(),
+  QWEN_REALTIME_WS_URL: z.string().url().default("wss://dashscope.aliyuncs.com/api-ws/v1/realtime"),
+  NOTES_STORAGE_ROOT: z.string().default(defaultNotesRoot),
+  DASHSCOPE_WORKSPACE: z.string().optional(),
   SEED_ASR_ENDPOINT: z.string().url().optional(),
   SEED_ASR_TIMEOUT_MS: z.coerce.number().int().positive().default(20000),
   JWT_SECRET: z.string().min(16),

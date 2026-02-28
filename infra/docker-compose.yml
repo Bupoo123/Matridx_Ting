@@ -46,12 +46,16 @@ services:
       dockerfile: apps/api/Dockerfile
     env_file:
       - ../.env
+    environment:
+      NOTES_STORAGE_ROOT: /data/notes
     depends_on:
       - postgres
       - redis
       - minio
     ports:
-      - "8080:8080"
+      - "8081:8081"
+    volumes:
+      - ./data/notes:/data/notes
 
   worker:
     build:
@@ -59,11 +63,15 @@ services:
       dockerfile: apps/worker/Dockerfile
     env_file:
       - ../.env
+    environment:
+      NOTES_STORAGE_ROOT: /data/notes
     depends_on:
       - postgres
       - redis
       - minio
       - api
+    volumes:
+      - ./data/notes:/data/notes
 
   web:
     build:
@@ -74,7 +82,7 @@ services:
     depends_on:
       - api
     ports:
-      - "3000:3000"
+      - "3122:3122"
 
 volumes:
   pgdata:

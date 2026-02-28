@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.744.0",
+    "@aws-sdk/s3-request-presigner": "^3.744.0",
     "@matridx/shared": "workspace:*",
     "bullmq": "^5.40.4",
     "dotenv": "^16.4.7",

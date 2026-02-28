@@ -7,7 +7,9 @@ CREATE TABLE IF NOT EXISTS ai_settings (
   user_id UUID NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
   stt_provider TEXT NOT NULL DEFAULT 'openai',
   stt_api_key TEXT,
-  stt_model TEXT NOT NULL DEFAULT 'gpt-4o-mini-transcribe',
+  stt_model TEXT,
+  stt_file_model TEXT NOT NULL DEFAULT 'gpt-4o-mini-transcribe',
+  stt_realtime_model TEXT NOT NULL DEFAULT 'qwen3-asr-flash-realtime',
   analysis_provider TEXT NOT NULL DEFAULT 'openai',
   analysis_api_key TEXT,
   analysis_model TEXT NOT NULL DEFAULT 'gpt-4.1-mini',
@@ -23,6 +25,20 @@ async function ensureAiSettingsTableExists() {
   if (!ensureTablePromise) {
     ensureTablePromise = (async () => {
       await pool.query(ensureAiSettingsTableSql);
+      await pool.query("ALTER TABLE ai_settings ADD COLUMN IF NOT EXISTS stt_file_model TEXT");
+      await pool.query("ALTER TABLE ai_settings ADD COLUMN IF NOT EXISTS stt_realtime_model TEXT");
+      await pool.query(
+        "UPDATE ai_settings SET stt_file_model = COALESCE(stt_file_model, stt_model, 'gpt-4o-mini-transcribe')"
+      );
+      await pool.query(
+        "UPDATE ai_settings SET stt_realtime_model = COALESCE(stt_realtime_model, 'qwen3-asr-flash-realtime')"
+      );
+      await pool.query(
+        "ALTER TABLE ai_settings ALTER COLUMN stt_file_model SET DEFAULT 'gpt-4o-mini-transcribe'"
+      );
+      await pool.query(
+        "ALTER TABLE ai_settings ALTER COLUMN stt_realtime_model SET DEFAULT 'qwen3-asr-flash-realtime'"
+      );
       await pool.query("CREATE INDEX IF NOT EXISTS idx_ai_settings_user ON ai_settings(user_id)");
     })().catch((error) => {
       ensureTablePromise = null;
@@ -41,7 +57,7 @@ export type RuntimeModelConfig = {
 type SettingsRow = {
   stt_provider: "openai" | "openrouter" | "seed-asr" | "qwen3-asr";
   stt_api_key: string | null;
-  stt_model: string;
+  stt_file_model: string;
   analysis_provider: "openai" | "openrouter";
   analysis_api_key: string | null;
   analysis_model: string;
@@ -53,7 +69,13 @@ export async function getRuntimeModelSettings(userId: string): Promise<{
 }> {
   await ensureAiSettingsTableExists();
   const rowResult = await pool.query<SettingsRow>(
-    `SELECT stt_provider, stt_api_key, stt_model, analysis_provider, analysis_api_key, analysis_model
+    `SELECT
+        stt_provider,
+        stt_api_key,
+        COALESCE(stt_file_model, stt_model, 'gpt-4o-mini-transcribe') AS stt_file_model,
+        analysis_provider,
+        analysis_api_key,
+        analysis_model
      FROM ai_settings
      WHERE user_id = $1`,
     [userId]
@@ -74,7 +96,7 @@ export async function getRuntimeModelSettings(userId: string): Promise<{
     stt: {
       provider: sttProvider,
       apiKey: row?.stt_api_key ?? config.STT_API_KEY ?? null,
-      model: row?.stt_model ?? "gpt-4o-mini-transcribe"
+      model: row?.stt_file_model ?? "gpt-4o-mini-transcribe"
     },
     analysis: {
       provider: analysisProvider,

@@ -1,10 +1,13 @@
 import OpenAI from "openai";
 import { toFile } from "openai/uploads";
 import {
+  LONG_AUDIO_THRESHOLD_MS,
   dailySummarySchema,
   renderDailySummaryMarkdown,
+  sttDispatchModeSchema,
   summaryPromptTemplate,
-  type DailySummary
+  type DailySummary,
+  type SttDispatchMode
 } from "@matridx/shared";
 import { config } from "../config.js";
 import type { RuntimeModelConfig } from "../ai-settings.js";
@@ -67,6 +70,166 @@ async function transcribeByQwenAsr(
   throw new Error("Qwen ASR 返回为空");
 }
 
+function mapUpstreamError(status: number, responseText: string): string {
+  if (status === 401 || status === 403) {
+    return `AUTH_ERROR: ${responseText || "认证失败，请检查 STT Key"}`;
+  }
+  if (status === 400) {
+    return `MODEL_ERROR: ${responseText || "模型或参数不合法"}`;
+  }
+  if (status >= 500) {
+    return `UPSTREAM_5XX: ${responseText || "上游服务错误"}`;
+  }
+  return `UPSTREAM_${status}: ${responseText || "请求失败"}`;
+}
+
+function buildQwenFiletransBaseUrl() {
+  return config.QWEN_FILETRANS_API_BASE.replace(/\/$/, "");
+}
+
+async function submitQwenFiletransJob(input: {
+  fileUrl: string;
+  model: string;
+  apiKey: string;
+}): Promise<{ jobId: string }> {
+  const response = await fetch(`${buildQwenFiletransBaseUrl()}/services/audio/asr/transcription`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${input.apiKey}`,
+      "Content-Type": "application/json",
+      "X-DashScope-Async": "enable"
+    },
+    body: JSON.stringify({
+      model: input.model,
+      input: {
+        file_url: input.fileUrl
+      },
+      parameters: {
+        language: "zh",
+        enable_itn: false,
+        enable_words: true
+      }
+    })
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(mapUpstreamError(response.status, text));
+  }
+  const payload = (await response.json()) as { output?: { task_id?: string } };
+  const taskId = payload.output?.task_id;
+  if (!taskId) {
+    throw new Error("MODEL_ERROR: filetrans 未返回 task_id");
+  }
+  return { jobId: taskId };
+}
+
+function collectTextCandidates(payload: unknown): string[] {
+  if (!payload || typeof payload !== "object") return [];
+  const stack: unknown[] = [payload];
+  const values: string[] = [];
+  while (stack.length) {
+    const current = stack.pop();
+    if (!current || typeof current !== "object") continue;
+    if (Array.isArray(current)) {
+      stack.push(...current);
+      continue;
+    }
+    for (const [key, value] of Object.entries(current as Record<string, unknown>)) {
+      if (
+        typeof value === "string" &&
+        value.trim() &&
+        (key === "text" || key === "sentence" || key === "transcript" || key === "content")
+      ) {
+        values.push(value.trim());
+      } else if (value && typeof value === "object") {
+        stack.push(value);
+      }
+    }
+  }
+  return values;
+}
+
+async function parseQwenFiletransResult(payload: {
+  output?: { transcription_url?: string };
+}): Promise<string> {
+  const resultUrl = payload.output?.transcription_url;
+  if (!resultUrl) {
+    throw new Error("MODEL_ERROR: filetrans 结果缺少 transcription_url");
+  }
+  const response = await fetch(resultUrl);
+  if (!response.ok) {
+    throw new Error(`UPSTREAM_${response.status}: 读取 transcription_url 失败`);
+  }
+  const resultPayload = (await response.json()) as unknown;
+  const texts = collectTextCandidates(resultPayload);
+  const merged = texts.join("\n").trim();
+  if (!merged) {
+    throw new Error("MODEL_ERROR: filetrans 返回为空");
+  }
+  return merged;
+}
+
+async function pollQwenFiletransResult(input: {
+  jobId: string;
+  apiKey: string;
+  timeoutMs: number;
+  intervalMs: number;
+}): Promise<string> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < input.timeoutMs) {
+    const response = await fetch(`${buildQwenFiletransBaseUrl()}/tasks/${input.jobId}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${input.apiKey}`
+      }
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(mapUpstreamError(response.status, text));
+    }
+    const payload = (await response.json()) as {
+      output?: { task_status?: string; message?: string; transcription_url?: string };
+    };
+    const status = payload.output?.task_status ?? "";
+    if (status === "SUCCEEDED") {
+      return parseQwenFiletransResult(payload);
+    }
+    if (status === "FAILED" || status === "CANCELED") {
+      const message = `${payload.output?.message ?? ""}`.trim();
+      if (message.includes("FILE_DOWNLOAD_FAILED")) {
+        throw new Error(
+          "MODEL_ERROR: filetrans 任务失败 FILE_DOWNLOAD_FAILED（请确认音频 URL 对 DashScope 可访问，localhost/内网地址不可用）"
+        );
+      }
+      throw new Error(`MODEL_ERROR: filetrans 任务失败 ${message}`.trim());
+    }
+    await new Promise((resolve) => setTimeout(resolve, input.intervalMs));
+  }
+  throw new Error(`TIMEOUT: filetrans 轮询超时（>${Math.floor(input.timeoutMs / 1000)}秒）`);
+}
+
+async function transcribeByQwenFiletrans(input: {
+  fileUrl: string;
+  model: string;
+  apiKey: string;
+}) {
+  const submitted = await submitQwenFiletransJob({
+    fileUrl: input.fileUrl,
+    model: input.model,
+    apiKey: input.apiKey
+  });
+  const text = await pollQwenFiletransResult({
+    jobId: submitted.jobId,
+    apiKey: input.apiKey,
+    timeoutMs: config.QWEN_FILETRANS_TIMEOUT_MS,
+    intervalMs: config.QWEN_FILETRANS_POLL_INTERVAL_MS
+  });
+  return {
+    text,
+    jobId: submitted.jobId
+  };
+}
+
 function resolveTextFromSeedAsrResponse(payload: unknown): string | null {
   if (!payload || typeof payload !== "object") return null;
   const record = payload as Record<string, unknown>;
@@ -117,16 +280,63 @@ async function transcribeBySeedAsr(
   }
 }
 
+export type TranscribeAudioResult = {
+  text: string;
+  dispatchMode: SttDispatchMode;
+  providerJobId: string | null;
+  modelUsed: string;
+};
+
+type TranscribeAudioOptions = {
+  durationMs: number;
+  sourceUrl?: string | null;
+};
+
+export function resolveQwenSttDispatchMode(durationMs: number): SttDispatchMode {
+  const longAudioThreshold = config.LONG_AUDIO_THRESHOLD_MS || LONG_AUDIO_THRESHOLD_MS;
+  return durationMs > longAudioThreshold ? "long_filetrans" : "short_inline";
+}
+
 export async function transcribeAudio(
   buffer: Buffer,
   filename: string,
-  sttConfig: RuntimeModelConfig
-): Promise<string> {
+  sttConfig: RuntimeModelConfig,
+  options: TranscribeAudioOptions
+): Promise<TranscribeAudioResult> {
   if (sttConfig.provider === "seed-asr") {
-    return transcribeBySeedAsr(buffer, filename, sttConfig);
+    const text = await transcribeBySeedAsr(buffer, filename, sttConfig);
+    return { text, dispatchMode: "short_inline", providerJobId: null, modelUsed: sttConfig.model };
   }
   if (sttConfig.provider === "qwen3-asr") {
-    return transcribeByQwenAsr(buffer, sttConfig);
+    const shouldUseFiletrans = resolveQwenSttDispatchMode(options.durationMs) === "long_filetrans";
+    if (shouldUseFiletrans) {
+      if (!options.sourceUrl) {
+        throw new Error("MODEL_ERROR: 长音频转写缺少可访问的 file_url");
+      }
+      const model = config.QWEN_FILETRANS_MODEL || "qwen3-asr-flash-filetrans";
+      const apiKey = sttConfig.apiKey || config.QWEN_ASR_API_KEY || "";
+      if (!apiKey) {
+        throw new Error("AUTH_ERROR: Qwen STT API Key 未配置");
+      }
+      const result = await transcribeByQwenFiletrans({
+        fileUrl: options.sourceUrl,
+        model,
+        apiKey
+      });
+      return {
+        text: result.text,
+        dispatchMode: sttDispatchModeSchema.parse("long_filetrans"),
+        providerJobId: result.jobId,
+        modelUsed: model
+      };
+    }
+    const text = await transcribeByQwenAsr(buffer, sttConfig);
+    return {
+      text,
+      dispatchMode: sttDispatchModeSchema.parse("short_inline"),
+      providerJobId: null,
+      modelUsed: sttConfig.model
+    };
   }
   const client = createClient(sttConfig);
   const file = await toFile(buffer, filename);
@@ -135,7 +345,12 @@ export async function transcribeAudio(
     model: sttConfig.model,
     language: "zh"
   });
-  return result.text?.trim() || "未获得转写结果。";
+  return {
+    text: result.text?.trim() || "未获得转写结果。",
+    dispatchMode: "short_inline",
+    providerJobId: null,
+    modelUsed: sttConfig.model
+  };
 }
 
 export async function generateDailySummaryFromText(
