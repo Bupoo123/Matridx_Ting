@@ -1,6 +1,7 @@
 FROM node:20-alpine AS base
 WORKDIR /app
-RUN corepack enable
+ENV COREPACK_NPM_REGISTRY=https://registry.npmmirror.com
+RUN corepack enable && pnpm config set registry https://registry.npmmirror.com
 COPY package.json pnpm-workspace.yaml tsconfig.base.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY packages/shared/package.json packages/shared/package.json
