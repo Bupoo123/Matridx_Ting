@@ -62,6 +62,7 @@ const transcribeWorker = new Worker(
       recordingId
     ]);
 
+    let transcribeSucceeded = false;
     try {
       const object = await s3.send(
         new GetObjectCommand({
@@ -100,6 +101,7 @@ const transcribeWorker = new Worker(
       );
 
       await pool.query("UPDATE recordings SET status = 'transcribed' WHERE id = $1", [recordingId]);
+      transcribeSucceeded = true;
       try {
         await persistMeetingNoteForRecording(recordingId, userId, "upload");
       } catch (noteError) {
@@ -134,6 +136,11 @@ const transcribeWorker = new Worker(
       );
       throw error;
     } finally {
+      const configuredAttempts = job.opts.attempts ?? 1;
+      const isFinalAttempt = (job.attemptsMade + 1) >= configuredAttempts;
+      if (!transcribeSucceeded && !isFinalAttempt) {
+        return;
+      }
       try {
         await s3.send(
           new DeleteObjectCommand({

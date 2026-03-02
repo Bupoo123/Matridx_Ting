@@ -49,6 +49,10 @@ type UploadAndTranscribeOptions = {
   realtimeError?: string;
 };
 const LONG_AUDIO_THRESHOLD_MS = 5 * 60 * 1000;
+const SHORT_POLL_MAX = 50;
+const SHORT_POLL_INTERVAL_MS = 2500;
+const LONG_POLL_MAX = 360;
+const LONG_POLL_INTERVAL_MS = 5000;
 
 function appendLine(previous: string, line: string): string {
   const text = line.trim();
@@ -897,9 +901,12 @@ export default function HomePage() {
       },
       token
     );
-    setStatus("已提交转写，正在轮询状态");
-    for (let i = 0; i < 50; i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 2500));
+    const isLongAudio = durationMs > LONG_AUDIO_THRESHOLD_MS;
+    setStatus(isLongAudio ? "已提交长音频转写，可能需要几分钟到十几分钟，请耐心等待..." : "已提交转写，正在轮询状态");
+    const maxPoll = isLongAudio ? LONG_POLL_MAX : SHORT_POLL_MAX;
+    const intervalMs = isLongAudio ? LONG_POLL_INTERVAL_MS : SHORT_POLL_INTERVAL_MS;
+    for (let i = 0; i < maxPoll; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
       const state = await apiFetch<{ status: string; failed_reason: string | null }>(
         `/recordings/${recordingId}/status`,
         {},
@@ -918,7 +925,7 @@ export default function HomePage() {
         return;
       }
     }
-    setStatus("转写轮询超时，请稍后刷新");
+    setStatus(isLongAudio ? "长音频转写仍在云端处理中，请稍后点“刷新”查看结果。" : "转写轮询超时，请稍后刷新");
   };
 
   const uploadAndTranscribe = async (id: string, options?: UploadAndTranscribeOptions) => {
@@ -978,9 +985,12 @@ export default function HomePage() {
         },
         token
       );
-      setStatus("已提交转写，正在轮询状态");
-      for (let i = 0; i < 50; i += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 2500));
+      const isLongAudio = local.durationMs > LONG_AUDIO_THRESHOLD_MS;
+      setStatus(isLongAudio ? "已提交长音频转写，可能需要几分钟到十几分钟，请耐心等待..." : "已提交转写，正在轮询状态");
+      const maxPoll = isLongAudio ? LONG_POLL_MAX : SHORT_POLL_MAX;
+      const intervalMs = isLongAudio ? LONG_POLL_INTERVAL_MS : SHORT_POLL_INTERVAL_MS;
+      for (let i = 0; i < maxPoll; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
         const state = await apiFetch<{ status: string; failed_reason: string | null }>(
           `/recordings/${recordingId}/status`,
           {},
@@ -999,7 +1009,7 @@ export default function HomePage() {
           return;
         }
       }
-      setStatus("转写轮询超时，请稍后刷新");
+      setStatus(isLongAudio ? "长音频转写仍在云端处理中，请稍后点“刷新”查看结果。" : "转写轮询超时，请稍后刷新");
     } catch (error) {
       if (options?.realtimeSessionId) {
         await markRealtimeFallback(
